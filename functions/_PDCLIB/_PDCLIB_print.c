@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
+#include <ctype.h>
 
 #ifndef REGTEST
 
@@ -39,6 +40,10 @@
 
 #define E_lower    (1u<<15)
 #define E_unsigned (1u<<16)
+
+#define E_float    (1u<<17)
+#define E_fexp     (1u<<18)
+#define E_fautoexp (1u<<19)
 
 /* This macro delivers a given character to either a memory buffer or a stream,
    depending on the contents of 'status' (struct _PDCLIB_status_t).
@@ -265,6 +270,13 @@ static void stringformat( const char * s, struct _PDCLIB_status_t * status )
 }
 
 
+static void print_out( struct _PDCLIB_status_t * status, int ch )
+{
+    PUT( ch );
+    ++(status->current);
+}
+
+
 const char * _PDCLIB_print( const char * spec, struct _PDCLIB_status_t * status )
 {
     const char * orig_spec = spec;
@@ -449,15 +461,23 @@ const char * _PDCLIB_print( const char * spec, struct _PDCLIB_status_t * status 
             status->base = 16;
             status->flags |= E_unsigned;
             break;
-        case 'f':
-        case 'F':
-        case 'e':
-        case 'E':
-        case 'g':
         case 'G':
+        case 'g':
+            status->flags |= E_fautoexp;
+            /* fallthrough */
+        case 'E':
+        case 'e':
+            status->flags |= E_fexp;
+            /* fallthrough */
+        case 'F':
+        case 'f':
+            status->flags |= E_float;
+            if ( islower( *spec ) )
+                status->flags |= E_lower;
             break;
-        case 'a':
         case 'A':
+        case 'a':
+            /* TODO: hex floats */
             break;
         case 'c':
             /* TODO: wide chars. */
@@ -488,7 +508,54 @@ const char * _PDCLIB_print( const char * spec, struct _PDCLIB_status_t * status 
     }
 
     /* Do the actual output based on our findings */
-    if ( status->base != 0 )
+    if ( status->flags & E_float )
+    {
+        /* Float conversions */
+        /* TODO: Check for invalid flag combinations. */
+        /* TODO: handle float and long double properly */
+        int pprec = status->prec;
+        unsigned int pwidth = status->width;
+        unsigned int pflags = 0;
+        double value;
+        if ( !( status->flags & E_lower ) )
+            pflags |= _PDCLIB_FTOA_FLAG_UPPER;
+        if ( status->flags & E_zero )
+            pflags |= _PDCLIB_FTOA_FLAG_ZEROPAD;
+        if ( status->flags & E_space )
+            pflags |= _PDCLIB_FTOA_FLAG_SPACE;
+        if ( status->flags & E_plus )
+            pflags |= _PDCLIB_FTOA_FLAG_PLUS;
+        if ( pprec > 0 )
+            pflags |= _PDCLIB_FTOA_FLAG_PRECISION;
+        else
+            pprec = 0;
+        switch ( status->flags & ( E_long | E_ldouble ) )
+        {
+            case E_ldouble:
+                value = (double)va_arg( status->arg, long double );
+                break;
+            case E_long:
+            case 0: /* floats are promoted to doubles */
+                value = (double)va_arg( status->arg, double );
+                break;
+            default:
+                puts( "UNSUPPORTED PRINTF FLAG COMBINATION" );
+                return NULL;
+        }
+        if ( status->flags & E_fexp )
+        {
+            /* exponent format, use etoa */
+            if ( status->flags & E_fautoexp )
+                pflags |= _PDCLIB_FTOA_FLAG_ADAPT_EXP; /* fall back to %f when needed */
+            _PDCLIB_etoa( print_out, status, 0, value, pprec, pwidth, pflags );
+        }
+        else
+        {
+            /* normal format, use ftoa */
+            _PDCLIB_ftoa( print_out, status, 0, value, pprec, pwidth, pflags );
+        }
+    }
+    else if ( status->base != 0 )
     {
         /* Integer conversions */
         /* TODO: Check for invalid flag combinations. */
