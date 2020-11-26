@@ -45,6 +45,8 @@
 #define E_fexp     (1u<<18)
 #define E_fautoexp (1u<<19)
 
+#define E_prec     (1u<<20)
+
 /* This macro delivers a given character to either a memory buffer or a stream,
    depending on the contents of 'status' (struct _PDCLIB_status_t).
    x - the character to be delivered
@@ -381,6 +383,8 @@ const char * _PDCLIB_print( const char * spec, struct _PDCLIB_status_t * status 
         }
         /* Having a precision cancels out any zero flag. */
         status->flags &= ~E_zero;
+        /* Distinguish between no precision and 0 precision. */
+        status->flags |= E_prec;
     }
 
     /* Optional length modifier
@@ -525,7 +529,7 @@ const char * _PDCLIB_print( const char * spec, struct _PDCLIB_status_t * status 
             pflags |= _PDCLIB_FTOA_FLAG_SPACE;
         if ( status->flags & E_plus )
             pflags |= _PDCLIB_FTOA_FLAG_PLUS;
-        if ( pprec > 0 )
+        if ( status->flags & E_prec )
             pflags |= _PDCLIB_FTOA_FLAG_PRECISION;
         else
             pprec = 0;
