@@ -10,7 +10,8 @@
 
 struct tm * localtime( const time_t * timer )
 {
-    return NULL;
+    /* TODO: actually implement this */
+    return gmtime( timer );
 }
 
 #endif
