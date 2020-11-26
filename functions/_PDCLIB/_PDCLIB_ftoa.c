@@ -29,9 +29,12 @@
 #include <float.h>
 #include "pdclib/_PDCLIB_int.h"
 
-#define _PDCLIB_FTOA_MAXFLOAT 1e10
+#define _PDCLIB_FTOA_MAXFLOAT 1e9
 #define _PDCLIB_FTOA_BUFSIZE 32U
 #define _PDCLIB_FTOA_DEFAULT_FLOAT_PRECISION 6U
+
+/* powers of 10 */
+static const double pow10[] = { 1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000 };
 
 static unsigned int _out_rev( _PDCLIB_ftoa_out_fn out, struct _PDCLIB_status_t * status, int idx, const char* buf, unsigned int len, unsigned int width, unsigned int flags )
 {
@@ -67,8 +70,6 @@ static unsigned int _out_rev( _PDCLIB_ftoa_out_fn out, struct _PDCLIB_status_t *
 
 unsigned int _PDCLIB_ftoa( _PDCLIB_ftoa_out_fn out, struct _PDCLIB_status_t * status, int idx, double value, unsigned int prec, unsigned int width, unsigned int flags )
 {
-    /* powers of 10 */
-    static const double pow10[] = { 1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000 };
     char buf[_PDCLIB_FTOA_BUFSIZE];
     unsigned int len = 0U;
     double diff = 0.0;
@@ -115,36 +116,32 @@ unsigned int _PDCLIB_ftoa( _PDCLIB_ftoa_out_fn out, struct _PDCLIB_status_t * st
     frac = (unsigned long)tmp;
     diff = tmp - frac;
 
-    if ( diff > 0.5 )
+    if ( diff < 0.5 )
     {
+        /* round down */
+    }
+    else if ( diff > 0.5 )
+    {
+        /* round up */
         ++frac;
-        /* handle rollover, e.g. case 0.99 with prec 1 is 1.0 */
-        if ( frac >= pow10[prec] )
-        {
-            frac = 0;
-            ++whole;
-        }
-    }
-    else if ( diff < 0.5 )
-    {
-    }
-    else if ( ( frac == 0U ) || ( frac & 1U ) )
-    {
-        /* if halfway, round up if odd OR if last digit is 0 */
-        ++frac;
-    }
-
-    if ( prec == 0U ) 
-    {
-        diff = value - (double)whole;
-        if ( ( !(diff < 0.5) || (diff > 0.5) ) && ( whole & 1 ) )
-        {
-            /* exactly 0.5 and ODD, then round up */
-            /* 1.5 -> 2, but 2.5 -> 2 */
-            ++whole;
-        }
     }
     else
+    {
+        /* if halfway, round up if odd OR if last digit is 0 */
+        if ( prec == 0U )
+            whole = (whole + 1) & ~1U; /* round whole to even */
+        else
+            frac = (frac + 1) & ~1U;   /* round fraction to even */
+    }
+
+    /* handle rollover, e.g. case 0.99 with prec 1 is 1.0 */
+    if ( frac >= pow10[prec] )
+    {
+        frac = 0;
+        ++whole;
+    }
+
+    if ( prec )
     {
         unsigned int count = prec;
         /* now do fractional part, as an unsigned number */
@@ -213,27 +210,37 @@ unsigned int _PDCLIB_etoa( _PDCLIB_ftoa_out_fn out, struct _PDCLIB_status_t * st
     if ( !( flags & _PDCLIB_FTOA_FLAG_PRECISION ) )
         prec = _PDCLIB_FTOA_DEFAULT_FLOAT_PRECISION;
 
-    /* determine the decimal exponent */
-    /* based on the algorithm by David Gay (https://www.ampl.com/netlib/fp/dtoa.c) */
-    conv.F = value;
-    exp2 = (int)( ( conv.U >> 52U ) & 0x07FFU ) - 1023; // effectively log2
-    conv.U = ( conv.U & ( ( 1ULL << 52U ) - 1U ) ) | ( 1023ULL << 52U ); // drop the exponent so conv.F is now in [1,2)
-    /* now approximate log10 from the log2 integer part and an expansion of ln around 1.5 */
-    expval = (int)( 0.1760912590558 + exp2 * 0.301029995663981 + ( conv.F - 1.5 ) * 0.289529654602168 );
-    /* now we want to compute 10^expval but we want to be sure it won't overflow */
-    exp2 = (int)( expval * 3.321928094887362 + 0.5 );
-    z    = expval * 2.302585092994046 - exp2 * 0.6931471805599453;
-    z2 = z * z;
-    conv.U = (_PDCLIB_uint64_t)( exp2 + 1023 ) << 52U;
-    /* compute exp(z) using continued fractions
-       see https://en.wikipedia.org/wiki/Exponential_function#Continued_fractions_for_ex
-    */
-    conv.F *= 1 + 2 * z / ( 2 - z + ( z2 / ( 6 + ( z2 / ( 10 + z2 / 14 ) ) ) ) );
-    /* correct for rounding errors */
-    if ( value < conv.F )
+    /* handle zero explicitly */
+    if ( value != 0 )
     {
-        expval--;
-        conv.F /= 10;
+        /* determine the decimal exponent */
+        /* based on the algorithm by David Gay (https://www.ampl.com/netlib/fp/dtoa.c) */
+        conv.F = value;
+        exp2 = (int)( ( conv.U >> 52U ) & 0x07FFU ) - 1023; // effectively log2
+        conv.U = ( conv.U & ( ( 1ULL << 52U ) - 1U ) ) | ( 1023ULL << 52U ); // drop the exponent so conv.F is now in [1,2)
+        /* now approximate log10 from the log2 integer part and an expansion of ln around 1.5 */
+        expval = (int)( 0.1760912590558 + exp2 * 0.301029995663981 + ( conv.F - 1.5 ) * 0.289529654602168 );
+        /* now we want to compute 10^expval but we want to be sure it won't overflow */
+        exp2 = (int)( expval * 3.321928094887362 + 0.5 );
+        z    = expval * 2.302585092994046 - exp2 * 0.6931471805599453;
+        z2 = z * z;
+        conv.U = (_PDCLIB_uint64_t)( exp2 + 1023 ) << 52U;
+        /* compute exp(z) using continued fractions
+           see https://en.wikipedia.org/wiki/Exponential_function#Continued_fractions_for_ex
+        */
+        conv.F *= 1 + 2 * z / ( 2 - z + ( z2 / ( 6 + ( z2 / ( 10 + z2 / 14 ) ) ) ) );
+        /* correct for rounding errors */
+        if ( value < conv.F )
+        {
+            expval--;
+            conv.F /= 10;
+        }
+    }
+    else
+    {
+        /* zero is 0e0 */
+        expval = 0;
+        conv.F = 0;
     }
 
     /* the exponent format is "%+03d" and largest value is "307", so set aside 4-5 characters */
@@ -242,23 +249,36 @@ unsigned int _PDCLIB_etoa( _PDCLIB_ftoa_out_fn out, struct _PDCLIB_status_t * st
     /* in "%g" mode, "prec" is the number of *significant figures* not decimals */
     if ( flags & _PDCLIB_FTOA_FLAG_ADAPT_EXP )
     {
+        const int user_prec = ( flags & _PDCLIB_FTOA_FLAG_PRECISION ); /* remember if prec was specified */
+        flags |= _PDCLIB_FTOA_FLAG_PRECISION; /* make sure _ftoa respects precision */
         /* do we want to fall-back to "%f" mode? */
-        if ( ( value >= 1e-4 ) && ( value < 1e6 ) )
+        if ( ( expval >= -4 ) &&  ( expval < 6 || ( expval < (int)prec && expval <= 9 ) ) )
         {
             if ( (int)prec > expval )
                 prec = (unsigned)( (int)prec - expval - 1 );
             else
                 prec = 0;
-            flags |= _PDCLIB_FTOA_FLAG_PRECISION; /* make sure _ftoa respects precision */
             /* no characters in exponent */
             minwidth = 0U;
-            expval     = 0;
+            expval = 0;
         }
         else
         {
             /* we use one sigfig for the whole part */
-            if ( ( prec > 0 ) && ( flags & _PDCLIB_FTOA_FLAG_PRECISION ) )
+            if ( ( prec > 0 ) )
                 --prec;
+        }
+        /* try to omit trailing zeros on the fractional part if there wasn't any precision specified */
+        if ( !user_prec && prec && prec < 10 )
+        {
+            /* FIXME: this is very bad and grossly incorrect */
+            const unsigned long whole = (unsigned long)value;
+            unsigned long frac = (unsigned long) ( ( value - whole ) * pow10[prec] );
+            while ( prec && ( ( frac % 10UL ) == 0UL ) )
+            {
+                --prec;
+                frac /= 10UL;
+            }
         }
     }
 
@@ -300,11 +320,12 @@ unsigned int _PDCLIB_etoa( _PDCLIB_ftoa_out_fn out, struct _PDCLIB_status_t * st
         ++idx;
         /* store the exponent value */
         expbuf[expidx--] = 0;
-        while ( expval && expidx >= 0 )
+        do
         {
             expbuf[expidx--] = '0' + ( expval % 10 );
             expval /= 10;
         }
+        while ( expval && expidx >= 0 );
         /* output it */
         for ( ++expidx; expbuf[expidx]; ++expidx, ++idx )
             out( status, expbuf[expidx] );
