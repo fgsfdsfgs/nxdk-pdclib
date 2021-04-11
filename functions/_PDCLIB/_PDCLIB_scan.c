@@ -27,7 +27,8 @@
 #define E_size       1<<11
 #define E_ptrdiff    1<<12
 #define E_pointer    1<<13
-#define E_ldouble    1<<14
+#define E_float      1<<14
+#define E_ldouble    1<<15
 #define E_unsigned   1<<16
 
 
@@ -109,6 +110,281 @@ static int IN_SCANSET( const char * scanlist, const char * end_scanlist, int rc 
         }
     }
     return 0;
+}
+
+
+/* Helper function to parse an integer out of the input stream */
+static int parse_integer( struct _PDCLIB_status_t * status, uintmax_t *outvalue, int *outsign, int *outchr )
+{
+    uintmax_t value = 0;
+    int prefix_parsed = 0;
+    int sign = 0;
+    int rc = 0;
+    int value_parsed = 0;
+
+    while ( ( status->current < status->width ) &&
+            ( ( rc = GET( status ) ) != EOF ) )
+    {
+        if ( isspace( rc ) )
+        {
+            if ( sign )
+            {
+                /* matching sequence terminated by whitespace */
+                UNGET( rc, status );
+                break;
+            }
+            else
+            {
+                /* leading whitespace not counted against width */
+                status->current--;
+            }
+        }
+        else if ( ! sign )
+        {
+            /* no sign parsed yet */
+            switch ( rc )
+            {
+                case '-':
+                    sign = -1;
+                    break;
+                case '+':
+                    sign = 1;
+                    break;
+                default:
+                    /* not a sign; put back character */
+                    sign = 1;
+                    UNGET( rc, status );
+                    break;
+            }
+        }
+        else if ( ! prefix_parsed )
+        {
+            /* no prefix (0x... for hex, 0... for octal) parsed yet */
+            prefix_parsed = 1;
+            if ( rc != '0' )
+            {
+                /* not a prefix; if base not yet set, set to decimal */
+                if ( status->base == 0 )
+                {
+                    status->base = 10;
+                }
+                UNGET( rc, status );
+            }
+            else
+            {
+                /* starts with zero, so it might be a prefix. */
+                /* check what follows next (might be 0x...) */
+                if ( ( status->current < status->width ) &&
+                     ( ( rc = GET( status ) ) != EOF ) )
+                {
+                    if ( tolower( rc ) == 'x' )
+                    {
+                        /* 0x... would be prefix for hex base... */
+                        if ( ( status->base == 0 ) ||
+                             ( status->base == 16 ) )
+                        {
+                            status->base = 16;
+                        }
+                        else
+                        {
+                            /* ...unless already set to other value */
+                            UNGET( rc, status );
+                            value_parsed = 1;
+                        }
+                    }
+                    else
+                    {
+                        /* 0... but not 0x.... would be octal prefix */
+                        UNGET( rc, status );
+                        if ( status->base == 0 )
+                        {
+                            status->base = 8;
+                        }
+                        /* in any case we have read a zero */
+                        value_parsed = 1;
+                    }
+                }
+                else
+                {
+                    /* failed to read beyond the initial zero */
+                    value_parsed = 1;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            char * digitptr = memchr( _PDCLIB_digits, tolower( rc ), status->base );
+            if ( digitptr == NULL )
+            {
+                /* end of input item */
+                UNGET( rc, status );
+                break;
+            }
+            value *= status->base;
+            value += digitptr - _PDCLIB_digits;
+            value_parsed = 1;
+        }
+    }
+
+    *outvalue = value;
+    *outsign = sign;
+    *outchr = rc;
+
+    return value_parsed;
+}
+
+
+/* Helper function to parse a float out of the input stream */
+static int parse_double( struct _PDCLIB_status_t * status, double *outvalue, int *outchr )
+{
+    /* slightly simplified version of the parser in _PDCLIB_fmtstrtod()
+       this very sub-optimal because we essentially do the work strtod it
+       going to do later, but to fix that someone would have to adapt it
+       for use with GETC/UNGETC kind of functions
+    */
+
+    enum
+    {
+        /* max characters in string representation */
+        FP_NUM_DIGITS = 256,
+        /* state graph */
+        FP_STATE0 = 0, /* _  _S0 +S1 #S2 .S3 */
+        FP_STATE1,     /* _+         #S2 .S3 */
+        FP_STATE2,     /* _+#    #S2 .S4 eS5 */
+        FP_STATE3,     /* _+.            #S4 */
+        FP_STATE4,     /* _+#.#      #S4 eS5 */
+        FP_STATE5,     /* _+#.#e     +S6 #S7 */
+        FP_STATE6,     /* _+#.#e+        #S7 */
+        FP_STATE7      /* _+#.#e+#       #S7 */
+    };
+
+    char str[FP_NUM_DIGITS + 1];
+    unsigned int nstr = 0;
+    unsigned int flags = 0;
+    int state = FP_STATE0;
+    int rc = 0;
+
+    /* TODO: support hex floats */
+    /* TODO: +-inf, nan */
+    while ( ( status->current < status->width ) &&
+            ( ( rc = GET( status ) ) != EOF ) )
+    {
+        if ( rc >= '0' && rc <= '9' )
+        {
+            switch ( state )
+            {
+                case FP_STATE0:
+                case FP_STATE1:
+                case FP_STATE2:
+                    state = FP_STATE2;
+                    break;
+                case FP_STATE3:
+                case FP_STATE4:
+                    state = FP_STATE4;
+                    break;
+                case FP_STATE5:
+                case FP_STATE6:
+                case FP_STATE7:
+                    state = FP_STATE7;
+                    break;
+            }
+            /* digits are valid in any state */
+            /* even shit like +0000.00050E-0050 should work */
+            if ( nstr < FP_NUM_DIGITS )
+                str[nstr++] = rc;
+            continue;
+        }
+        switch ( rc )
+        {
+            case '\t':
+            case '\n':
+            case '\v':
+            case '\f':
+            case '\r':
+            case ' ':
+                if ( state == FP_STATE0 )
+                {
+                    /* leading whitespace not counted against width */
+                    status->current--;
+                    continue;
+                }
+                break; /* syntax error */
+            case '-':
+            case '+':
+                if ( state == FP_STATE0 )
+                    state = FP_STATE1;
+                else if ( state == FP_STATE5 )
+                    state = FP_STATE6;
+                else
+                    break; /* syntax error */
+                /* consume the sign */
+                if ( nstr < FP_NUM_DIGITS )
+                    str[nstr++] = rc;
+                continue;
+            case '.':
+                if ( state == FP_STATE0 || state == FP_STATE1 )
+                {
+                    state = FP_STATE3;
+                    /* consume the point */
+                    if ( nstr < FP_NUM_DIGITS )
+                        str[nstr++] = rc;
+                    continue;
+                }
+                if ( state == FP_STATE2 )
+                {
+                    state = FP_STATE4;
+                    /* consume the point */
+                    if ( nstr < FP_NUM_DIGITS )
+                        str[nstr++] = rc;
+                    continue;
+                }
+                break; /* syntax error */
+            case 'e':
+            case 'E':
+                if ( state == FP_STATE2 || state == FP_STATE4 )
+                {
+                    state = FP_STATE5;
+                    /* consume the exp sign */
+                    if ( nstr < FP_NUM_DIGITS )
+                        str[nstr++] = rc;
+                    continue;
+                }
+                break; /* syntax error */
+            default:
+                break; /* unexpected character */
+        }
+        /* invalid character; return it to the stream and bail */
+        UNGET( rc, status );
+        break;
+    }
+
+    str[nstr] = 0;
+    *outchr = rc;
+
+    /* let's see what we have parsed */
+    switch ( state )
+    {
+        case FP_STATE0:
+            /* stuck in state0, it's either bogus or a nan */
+            /* TODO: handle nan */
+            /* fallthrough */
+        case FP_STATE1:
+            /* stuck in state1, it's either bogus or a +-inf */
+            /* TODO: handle +-inf */
+            /* fallthrough */
+        case FP_STATE3:
+            /* no digits found */
+            return 0;
+        default:
+            /* should be valid */
+            break;
+    }
+
+    /* TODO: properly handle floats and long doubles */
+    *outvalue = _PDCLIB_fmtstrtod( str, NULL );
+
+    return 1;
 }
 
 
@@ -251,6 +527,7 @@ const char * _PDCLIB_scan( const char * spec, struct _PDCLIB_status_t * status )
         case 'G':
         case 'a':
         case 'A':
+            status->flags |= E_float;
             break;
         case 'c':
         {
@@ -399,116 +676,50 @@ const char * _PDCLIB_scan( const char * spec, struct _PDCLIB_status_t * status )
             return orig_spec;
     }
 
-    if ( status->base != -1 )
+    if ( status->flags & E_float )
+    {
+        /* float conversion */
+        double value;
+        value_parsed = parse_double( status, &value, &rc );
+        /* width or input exhausted, or non-matching character */
+        if ( ! value_parsed )
+        {
+            /* out of input before anything could be parsed - input error */
+            /* FIXME: if first character does not match, value_parsed is not set - but it is NOT an input error */
+            if ( ( status->n == 0 ) && ( rc == EOF ) )
+            {
+                status->n = -1;
+            }
+            return NULL;
+        }
+        /* convert value to target type and assign to parameter */
+        if ( ! ( status->flags & E_suppressed ) )
+        {
+            switch ( status->flags & ( E_long | E_ldouble ) )
+            {
+                case E_long:
+                    *( va_arg( status->arg,      double * ) ) =      (double)( value );
+                    break;
+                case E_ldouble:
+                    *( va_arg( status->arg, long double * ) ) = (long double)( value );
+                    break;
+                case 0:
+                    *( va_arg( status->arg,       float * ) ) =       (float)( value );
+                    break;
+                default:
+                    puts( "UNSUPPORTED SCANF FLAG COMBINATION" );
+                    return NULL; /* behaviour unspecified */
+            }
+            ++(status->n);
+        }
+        return ++spec;
+    }
+    else if ( status->base != -1 )
     {
         /* integer conversion */
         uintmax_t value = 0;         /* absolute value read */
-        int prefix_parsed = 0;
         int sign = 0;
-        while ( ( status->current < status->width ) &&
-                ( ( rc = GET( status ) ) != EOF ) )
-        {
-            if ( isspace( rc ) )
-            {
-                if ( sign )
-                {
-                    /* matching sequence terminated by whitespace */
-                    UNGET( rc, status );
-                    break;
-                }
-                else
-                {
-                    /* leading whitespace not counted against width */
-                    status->current--;
-                }
-            }
-            else if ( ! sign )
-            {
-                /* no sign parsed yet */
-                switch ( rc )
-                {
-                    case '-':
-                        sign = -1;
-                        break;
-                    case '+':
-                        sign = 1;
-                        break;
-                    default:
-                        /* not a sign; put back character */
-                        sign = 1;
-                        UNGET( rc, status );
-                        break;
-                }
-            }
-            else if ( ! prefix_parsed )
-            {
-                /* no prefix (0x... for hex, 0... for octal) parsed yet */
-                prefix_parsed = 1;
-                if ( rc != '0' )
-                {
-                    /* not a prefix; if base not yet set, set to decimal */
-                    if ( status->base == 0 )
-                    {
-                        status->base = 10;
-                    }
-                    UNGET( rc, status );
-                }
-                else
-                {
-                    /* starts with zero, so it might be a prefix. */
-                    /* check what follows next (might be 0x...) */
-                    if ( ( status->current < status->width ) &&
-                         ( ( rc = GET( status ) ) != EOF ) )
-                    {
-                        if ( tolower( rc ) == 'x' )
-                        {
-                            /* 0x... would be prefix for hex base... */
-                            if ( ( status->base == 0 ) ||
-                                 ( status->base == 16 ) )
-                            {
-                                status->base = 16;
-                            }
-                            else
-                            {
-                                /* ...unless already set to other value */
-                                UNGET( rc, status );
-                                value_parsed = 1;
-                            }
-                        }
-                        else
-                        {
-                            /* 0... but not 0x.... would be octal prefix */
-                            UNGET( rc, status );
-                            if ( status->base == 0 )
-                            {
-                                status->base = 8;
-                            }
-                            /* in any case we have read a zero */
-                            value_parsed = 1;
-                        }
-                    }
-                    else
-                    {
-                        /* failed to read beyond the initial zero */
-                        value_parsed = 1;
-                        break;
-                    }
-                }
-            }
-            else
-            {
-                char * digitptr = memchr( _PDCLIB_digits, tolower( rc ), status->base );
-                if ( digitptr == NULL )
-                {
-                    /* end of input item */
-                    UNGET( rc, status );
-                    break;
-                }
-                value *= status->base;
-                value += digitptr - _PDCLIB_digits;
-                value_parsed = 1;
-            }
-        }
+        value_parsed = parse_integer( status, &value, &sign, &rc );
         /* width or input exhausted, or non-matching character */
         if ( ! value_parsed )
         {

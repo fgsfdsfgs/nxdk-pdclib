@@ -422,6 +422,29 @@ _PDCLIB_LOCAL void _PDCLIB_setstream( struct _PDCLIB_file_t * stream );
 /* Backend for strtok and strtok_s (plus potential extensions like strtok_r). */
 _PDCLIB_LOCAL char * _PDCLIB_strtok( char * _PDCLIB_restrict s1, _PDCLIB_size_t * _PDCLIB_restrict s1max, const char * _PDCLIB_restrict s2, char ** _PDCLIB_restrict ptr );
 
+/* Backend for strtod/strtof/atof/atod and *scanf for floats */
+_PDCLIB_LOCAL double _PDCLIB_fmtstrtod( const char * str, char * * endptr );
+
+/* Backends for ftoa and *printf for floats */
+/* Output function type */
+typedef void ( * _PDCLIB_ftoa_out_fn )( struct _PDCLIB_status_t *, int );
+/* Normal format */
+unsigned int _PDCLIB_ftoa( _PDCLIB_ftoa_out_fn out, struct _PDCLIB_status_t * status, int idx, double value, unsigned int prec, unsigned int width, unsigned int flags );
+/* Exponential/scientific format */
+unsigned int _PDCLIB_etoa( _PDCLIB_ftoa_out_fn out, struct _PDCLIB_status_t * status, int idx, double value, unsigned int prec, unsigned int width, unsigned int flags );
+
+/* -------------------------------------------------------------------------- */
+/* ftoa flags and constants                                                   */
+/* -------------------------------------------------------------------------- */
+
+#define _PDCLIB_FTOA_FLAG_ZEROPAD   (1U <<  0U)
+#define _PDCLIB_FTOA_FLAG_PLUS      (1U <<  2U)
+#define _PDCLIB_FTOA_FLAG_SPACE     (1U <<  3U)
+#define _PDCLIB_FTOA_FLAG_UPPER     (1U <<  4U)
+#define _PDCLIB_FTOA_FLAG_LEFT      (1U <<  5U)
+#define _PDCLIB_FTOA_FLAG_PRECISION (1U << 10U)
+#define _PDCLIB_FTOA_FLAG_ADAPT_EXP (1U << 11U)
+
 /* -------------------------------------------------------------------------- */
 /* errno                                                                      */
 /* -------------------------------------------------------------------------- */
